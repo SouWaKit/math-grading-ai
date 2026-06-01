@@ -40,7 +40,7 @@ model_dict = get_friendly_models()
 # ==========================================
 # 3. 網頁介面 (UI) 設計
 # ==========================================
-st.title("📝 高中數學作業自動批改系統")
+st.title("📝 高中數學作業自動批改系統 (測試版)")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 1.2])
@@ -59,12 +59,15 @@ with col1:
     
     # 評分標準
     st.markdown("<br>", unsafe_allow_html=True)
-    default_rubric = "1. 寫出正確公式：給 2 分\n2. 運算過程正確：給 2 分\n3. 最終答案正確：給 1 分\n(總分 5 分)"
+    default_rubric = """1. 寫出正確公式：給 2 分
+2. 運算過程正確：給 2 分
+3. 最終答案正確：給 1 分
+(總分 5 分)"""
     rubric = st.text_area("設定評分標準 (Rubric)", value=default_rubric, height=150)
     
     # 檔案上傳 (第一階段先測試 JPG/PNG 圖片)
     st.markdown("<br>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("上傳學生作業圖片 (JPG/PNG)", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("上傳學生單張作業圖片 (JPG/PNG)", type=["jpg", "png", "jpeg"])
 
 with col2:
     st.subheader("👁️ 2. 作業預覽與批改結果")
@@ -92,7 +95,7 @@ with col2:
                     【作業要求】：
                     1. 仔細辨識圖片中的手寫算式。
                     2. 判斷學生的邏輯是否有錯、計算是否粗心。
-                    3. 請你嚴格以 JSON 格式回傳結果，不需要任何多餘的問候語或 Markdown 標記（如 ```json），直接輸出 JSON 內容即可。
+                    3. 請你嚴格以 JSON 格式回傳結果，不需要任何多餘的問候語，直接輸出 JSON 內容即可。
                     
                     【回傳 JSON 格式】：
                     {{
@@ -107,21 +110,28 @@ with col2:
                     response = model.generate_content([prompt, image])
                     raw_text = response.text.strip()
                     
-                    # 確保乾淨的 JSON 格式
-                    if raw_text.startswith("
-http://googleusercontent.com/immersive_entry_chip/0
-http://googleusercontent.com/immersive_entry_chip/1
-
----
-
-### 📥 怎麼看到更新？
-
-1. 把修改好的 `app.py` 和 `requirements.txt` 儲存。
-2. 將這兩個檔案重新拖曳上傳到你的 GitHub 儲存庫覆蓋舊檔（或者用 Git Commit 上傳）。
-3. 打開你之前的 Streamlit 網址，你會看到網頁右上方在轉圈圈（正在同步下載新套件與新程式碼）。
-4. 轉完後，**你的實體 AI 批改測試機就誕生了！**
-
-### 🎯 接下來的測試任務：
-拿一張你手邊的**高中數學手寫題目照片**，或者是你自己故意寫錯一個正負號的算式拍張照，上傳上去，選取 **`🧠 深度邏輯版`**（通常是最新的 Gemini 3.1 Pro 相關模型），看看它能不能精準抓出你故意寫錯的地方。
-
-等你測試完單張圖片，確定 AI 的批改品質符合預期後，我們下一階段再來加入**「PDF 班級大檔案自動分割成多個學生」**的進階功能。動手試試看吧！
+                    # 確保乾淨的 JSON 格式 (安全替換法，避免語法錯誤)
+                    raw_text = raw_text.replace("```json", "")
+                    raw_text = raw_text.replace("```", "")
+                    raw_text = raw_text.strip()
+                    
+                    # 解析結果
+                    result = json.loads(raw_text)
+                    
+                    # 顯示批改成果
+                    st.success("🎉 批改完成！")
+                    st.metric(label="🌟 AI 建議分數", value=f"{result.get('score', '未知')} 分")
+                    st.info(f"**💬 給學生的評語**：\n{result.get('feedback', '無')}")
+                    
+                    with st.expander("🔍 查看 AI 詳細分析過程"):
+                        st.write("**辨識到的算式：**")
+                        st.code(result.get('recognized_steps', '無法辨識'))
+                        st.write("**錯誤分析邏輯：**")
+                        st.write(result.get('error_analysis', '無詳細分析'))
+                        
+                except json.JSONDecodeError:
+                     st.error(f"💥 批改失敗。AI 未按標準 JSON 格式回傳。原始回傳內容：\n{raw_text}")
+                except Exception as e:
+                    st.error(f"💥 批改過程發生錯誤。錯誤訊息：{e}")
+    else:
+        st.info("👈 請先在左側設定評分標準，並上傳一張學生的作業圖片。")
