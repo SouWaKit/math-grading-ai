@@ -52,7 +52,7 @@ def extract_images_from_pdf(pdf_bytes):
     return images
 
 def grade_single_image(image_b64, model_name, rubric):
-    """封裝好的單張圖片批改函式"""
+    """封裝好的單張圖片批改函式 (加強除錯版)"""
     system_prompt = "你是一位嚴謹的高中數學老師。請嚴格以 JSON 格式回傳，不要有任何多餘的文字或 markdown 標記。"
     user_prompt = f"""請根據下方的【評分標準】，批改圖片中的學生數學作業。
 【評分標準】：
@@ -83,10 +83,20 @@ def grade_single_image(image_b64, model_name, rubric):
         temperature=0.2
     )
     
-    # 處理回傳的文字，確保是純 JSON
+    # 取得原始回傳文字
     raw_text = response.choices[0].message.content.strip()
-    raw_text = raw_text.replace("```json", "").replace("```", "").strip()
-    return json.loads(raw_text)
+    
+    # 嘗試清理字串
+    cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
+    
+    # 加入防呆除錯機制：如果不是以 { 開頭，直接丟出原始文字
+    if not cleaned_text.startswith("{"):
+        raise ValueError(f"第三方 API 沒有回傳 JSON 格式。原始回傳內容為：\n{raw_text}")
+
+    try:
+        return json.loads(cleaned_text)
+    except json.JSONDecodeError:
+        raise ValueError(f"JSON 解析失敗。原始回傳內容為：\n{raw_text}")
 
 # ==========================================
 # 3. 網頁介面 (UI) 設計
@@ -102,9 +112,9 @@ with col1:
     
     # 模型選擇選單
     model_options = {
-        "🧠 深度邏輯版 (gemini-3-flash-preview)": "gemini-3-flash-preview",
-        "⚡ 極速批改版 (gemini-3-flash-preview)": "gemini-3-flash-preview",
-        "🔮 備用高階模型 (gemini-3-flash-preview)": "gemini-3-flash-preview"
+        "🧠 深度邏輯版 (gemini-1.5-pro)": "gemini-1.5-pro",
+        "⚡ 極速批改版 (gemini-1.5-flash)": "gemini-1.5-flash",
+        "🔮 備用高階模型 (gpt-4o)": "gpt-4o"
     }
     selected_friendly_name = st.selectbox("選擇 AI 模型", options=list(model_options.keys()))
     actual_model_name = model_options[selected_friendly_name]
@@ -114,7 +124,7 @@ with col1:
     default_rubric = """1. 寫出正確公式：給 2 分\n2. 運算過程正確：給 2 分\n3. 最終答案正確：給 1 分\n(總分 5 分)"""
     rubric = st.text_area("設定評分標準 (Rubric)", value=default_rubric, height=150)
     
-    # 檔案上傳區 (新增 pdf 支援)
+    # 檔案上傳區 (支援 pdf)
     st.markdown("<br>", unsafe_allow_html=True)
     uploaded_file = st.file_uploader("上傳全班作業 (PDF) 或單張圖片 (JPG/PNG)", type=["pdf", "jpg", "png", "jpeg"])
 
@@ -164,7 +174,7 @@ with col2:
                         "status": "success"
                     })
                 except Exception as e:
-                    # 處理單頁失敗的狀況 (不中斷整個流程)
+                    # 處理單頁失敗的狀況 (不中斷整個流程，並記錄錯誤)
                     results_list.append({
                         "page": page_num,
                         "image": img,
