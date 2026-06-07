@@ -53,9 +53,8 @@ with col1:
     
     # 手動建立模型清單 (第三方網站通常支援這些標準命名)
     model_options = {
-        "🧠 深度邏輯版 (gemini-1.5-pro) - 適合複雜計算": "gemini-1.5-pro",
-        "⚡ 極速批改版 (gemini-1.5-flash) - 適合簡單題型": "gemini-1.5-flash",
-        "🔮 測試用 (gpt-4o) - 若第三方有支援也可選": "gpt-4o"
+        "🧠 gemini-3-flash-preview": "gemini-3-flash-preview"
+       
     }
     
     selected_friendly_name = st.selectbox("選擇 AI 模型", options=list(model_options.keys()))
