@@ -10,7 +10,7 @@ import re
 # ==========================================
 # 1. 頁面初始化與 API 設定
 # ==========================================
-st.set_page_config(page_title="高中數學作業自動批改系統 (Pro 視覺標註版)", layout="wide")
+st.set_page_config(page_title="高中數學作業自動批改系統 (終極版)", layout="wide")
 
 if "GEMINI_API_KEY" in st.secrets and "GEMINI_BASE_URL" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -48,8 +48,27 @@ def encode_image(image):
     image.save(buffered, format="JPEG", quality=75)
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
+# 【新增】專門用來讀取「圖片/PDF 評分標準」的 AI 函式
+def extract_rubric_with_ai(images_b64_list, model_name):
+    system_prompt = "你是一位專業的文字辨識助手。請不要有任何問候語，直接輸出結果。"
+    user_prompt = "請幫我仔細辨識圖片中的「數學評分標準」（可能是手寫或列印）。請將其轉換為條理分明的純文字格式，務必保留所有的配分細節與條件。"
+    
+    content_list = [{"type": "text", "text": user_prompt}]
+    for b64 in images_b64_list:
+        content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+        
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content_list}
+        ],
+        max_tokens=1000,
+        temperature=0.1
+    )
+    return response.choices[0].message.content.strip()
+
 def draw_error_boxes(original_image, boxes):
-    """根據 AI 給的座標，在圖片上畫出紅色框框"""
     annotated_image = original_image.copy()
     draw = ImageDraw.Draw(annotated_image)
     width, height = annotated_image.size
@@ -62,14 +81,12 @@ def draw_error_boxes(original_image, boxes):
                     y1 = (box[1] / 100.0) * height
                     x2 = (box[2] / 100.0) * width
                     y2 = (box[3] / 100.0) * height
-                    # 畫一個邊框粗細為 4 的醒目紅色長方形
                     draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
             except Exception:
                 pass 
     return annotated_image
 
 def robust_json_extract(text):
-    """【終極暴力解析】用正則表達式硬挖出 JSON 區塊，並嘗試修復"""
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         json_str = match.group(0)
@@ -86,7 +103,7 @@ def robust_json_extract(text):
             return json.loads(json_str)
         except:
             return {
-                "recognized_steps": "JSON 解析失敗，原始輸出過於混亂。",
+                "recognized_steps": "JSON 解析失敗。",
                 "error_analysis": "AI 輸出：\n" + text[:200] + "...",
                 "score": "未知",
                 "feedback": "解析失敗，請重新批改。",
@@ -136,8 +153,12 @@ def grade_single_image(image_b64, model_name, rubric):
 # ==========================================
 # 3. 網頁介面 (UI) 設計
 # ==========================================
-st.title("📝 高中數學作業自動批改系統 (Pro 視覺標註版)")
-st.markdown("啟用頂級模型，支援 **紅框糾錯**、**PDF 批量批改** 與 **匯入評分標準**。")
+# 初始化 session_state 來儲存評分標準，避免網頁重整時消失
+if "rubric_text" not in st.session_state:
+    st.session_state.rubric_text = "1. 寫出正確公式：給 2 分\n2. 運算過程正確：給 2 分\n3. 最終答案正確：給 1 分\n(總分 5 分)"
+
+st.title("📝 高中數學作業自動批改系統 (終極版)")
+st.markdown("支援 **紅框糾錯**、**PDF 批量批改** 與 **AI 手寫評分標準辨識**。")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 1.5])
@@ -145,7 +166,6 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("⚙️ 1. 批改設定")
     
-    # 選擇模型
     model_options = {
         "👑 頂級邏輯預覽版 (gemini-3.1-pro-preview)": "gemini-3.1-pro-preview",
         "🚀 極速預覽版 (gemini-3-flash-preview)": "gemini-3-flash-preview",
@@ -157,29 +177,43 @@ with col1:
     st.markdown("<br>", unsafe_allow_html=True)
     
     # ==========================================
-    # 【新增】評分標準輸入方式切換
+    # 評分標準輸入方式切換
     # ==========================================
     st.markdown("**📋 評分標準設定**")
-    rubric_mode = st.radio("選擇輸入方式：", ["手動輸入", "上傳檔案 (.txt)"], horizontal=True, label_visibility="collapsed")
+    rubric_mode = st.radio("選擇輸入方式：", ["手動輸入 / 確認區", "上傳文字檔 (.txt)", "上傳手寫/圖片/PDF"], horizontal=True, label_visibility="collapsed")
     
-    default_rubric = "1. 寫出正確公式：給 2 分\n2. 運算過程正確：給 2 分\n3. 最終答案正確：給 1 分\n(總分 5 分)"
-    
-    if rubric_mode == "手動輸入":
-        rubric = st.text_area("自訂評分標準", value=default_rubric, height=150, label_visibility="collapsed")
-    else:
-        # 提供上傳文字檔的選項
-        rubric_file = st.file_uploader("上傳包含評分標準的純文字檔 (.txt, .md)", type=["txt", "md"])
+    if rubric_mode == "上傳文字檔 (.txt)":
+        rubric_file = st.file_uploader("上傳包含評分標準的純文字檔", type=["txt", "md"])
         if rubric_file is not None:
-            # 讀取並解碼文字檔
-            rubric = rubric_file.read().decode("utf-8")
-            st.success("✅ 成功載入評分標準檔案！")
-            with st.expander("🔍 預覽目前使用的評分標準"):
-                st.text(rubric)
-        else:
-            # 如果還沒上傳，先用預設值墊檔
-            rubric = default_rubric
-            st.info("👆 請上傳檔案。目前將暫時使用系統預設標準。")
+            st.session_state.rubric_text = rubric_file.read().decode("utf-8")
+            st.success("✅ 成功載入文字檔！請在「手動輸入 / 確認區」查看。")
+            
+    elif rubric_mode == "上傳手寫/圖片/PDF":
+        st.info("💡 將手寫筆記或 PDF 拍照上傳，AI 會幫您轉成文字，省下打字時間！")
+        rubric_img_file = st.file_uploader("上傳評分標準圖片或 PDF", type=["pdf", "jpg", "png", "jpeg"])
+        
+        if rubric_img_file is not None:
+            if st.button("🔍 讓 AI 辨識這份評分標準", type="primary"):
+                with st.spinner("AI 正在努力閱讀您的筆記..."):
+                    try:
+                        ext = rubric_img_file.name.split('.')[-1].lower()
+                        if ext == 'pdf':
+                            r_images = extract_images_from_pdf(rubric_img_file.read())
+                        else:
+                            r_images = [Image.open(rubric_img_file)]
+                        
+                        b64_list = [encode_image(img) for img in r_images]
+                        extracted_text = extract_rubric_with_ai(b64_list, actual_model_name)
+                        
+                        # 更新到狀態中
+                        st.session_state.rubric_text = extracted_text
+                        st.success("🎉 辨識完成！請切換到「手動輸入 / 確認區」檢查是否有錯字。")
+                    except Exception as e:
+                        st.error(f"💥 辨識失敗：{e}")
 
+    # 最終的文字框：無論哪種方式，都在這裡做最後確認
+    st.session_state.rubric_text = st.text_area("確認 / 修改最終評分標準", value=st.session_state.rubric_text, height=150)
+    
     st.markdown("<br>", unsafe_allow_html=True)
     
     # 考卷上傳區
@@ -210,13 +244,16 @@ with col2:
             results_list = []
             total_pages = len(images_to_process)
             
+            # 使用狀態裡的最新評分標準來批改
+            final_rubric = st.session_state.rubric_text
+            
             for i, img in enumerate(images_to_process):
                 page_num = i + 1
                 status_text.text(f"🧠 {actual_model_name} 正在批改第 {page_num} / {total_pages} 頁，並嘗試定位錯誤...")
                 
                 try:
                     b64_img = encode_image(img)
-                    result_json = grade_single_image(b64_img, actual_model_name, rubric)
+                    result_json = grade_single_image(b64_img, actual_model_name, final_rubric)
                     
                     annotated_img = draw_error_boxes(img, result_json.get('error_boxes', []))
                     
