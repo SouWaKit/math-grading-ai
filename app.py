@@ -112,8 +112,8 @@ with col1:
     
     # 模型選擇選單
     model_options = {
-        "🧠 深度邏輯版 (gemini-1.5-pro)": "gemini-1.5-pro",
-        "⚡ 極速批改版 (gemini-1.5-flash)": "gemini-1.5-flash",
+        "🧠 gemini-3-flash-preview": "gemini-3-flash-preview",
+        "⚡ gemini-3-flash-preview": "gemini-3-flash-preview",
         "🔮 備用高階模型 (gpt-4o)": "gpt-4o"
     }
     selected_friendly_name = st.selectbox("選擇 AI 模型", options=list(model_options.keys()))
