@@ -9,7 +9,7 @@ import json
 st.set_page_config(page_title="高中數學作業自動批改系統", layout="wide")
 
 if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    
 else:
     st.error("⚠️ 請先在 Streamlit 後台 Secrets 中設定 GEMINI_API_KEY")
     st.stop()
