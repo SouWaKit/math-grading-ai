@@ -16,7 +16,7 @@ if "GEMINI_API_KEY" in st.secrets and "GEMINI_BASE_URL" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
     base_url = st.secrets["GEMINI_BASE_URL"]
     
-    # 確保 base_url 結尾有 /v1 (多數第三方 API 的標準格式)
+    # 確保 base_url 結尾有 /v1
     if not base_url.endswith("/v1") and not base_url.endswith("/v1/"):
         base_url = base_url.rstrip("/") + "/v1"
         
@@ -27,48 +27,55 @@ else:
     st.stop()
 
 # ==========================================
-# 2. 輔助函式
+# 2. 輔助函式 (優化 Token 節能版)
 # ==========================================
-def encode_image(image):
-    """將 PIL 圖片轉換為 Base64 編碼，供 API 讀取"""
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    buffered = io.BytesIO()
-    # 稍微壓縮圖片以加快傳輸速度
-    image.save(buffered, format="JPEG", quality=85)
-    return base64.b64encode(buffered.getvalue()).decode('utf-8')
-
 def extract_images_from_pdf(pdf_bytes):
-    """將上傳的 PDF 檔案轉換為一頁一頁的圖片列表"""
+    """將 PDF 轉換為圖片，適度降低放大倍率以節省 Token 消耗"""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     images = []
     for page_num in range(len(doc)):
         page = doc.load_page(page_num)
-        # 放大 2 倍確保算式清晰度 (matrix=2,2)
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        # 從 Matrix(2, 2) 微調至 (1.3, 1.3)，既能看清字跡，又能大幅降低 AI 的切片(Tiles)計費
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.3, 1.3))
         img_data = pix.tobytes("png")
         img = Image.open(io.BytesIO(img_data))
         images.append(img)
     return images
 
+def encode_image(image):
+    """將圖片等比例縮小並壓縮，控制在低 Token 計費區間"""
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    # 限制圖片最大邊長不超過 1024 像素
+    max_size = 1024
+    if max(image.size) > max_size:
+        image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        
+    buffered = io.BytesIO()
+    # 稍微調降 JPEG 品質至 70 減少傳輸大小，但不影響字跡辨識
+    image.save(buffered, format="JPEG", quality=70)
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
 def grade_single_image(image_b64, model_name, rubric):
-    """封裝好的單張圖片批改函式 (加強除錯版)"""
-    system_prompt = "你是一位嚴謹的高中數學老師。請嚴格以 JSON 格式回傳，不要有任何多餘的文字或 markdown 標記。"
-    user_prompt = f"""請根據下方的【評分標準】，批改圖片中的學生數學作業。
+    """封裝好的單張圖片批改函式 (強制 JSON 模式與大 Token 版)"""
+    system_prompt = "你是一位嚴謹的高中數學老師。你必須且只能以 JSON 格式回傳批改結果，嚴禁包含任何額外的問候語或 Markdown 標記。"
+    user_prompt = f"""請根據下方的【評分標準】，詳細批改圖片中的學生數學作業算式。
 【評分標準】：
 {rubric}
 
 【回傳 JSON 格式要求】：
 {{
     "recognized_steps": "你辨識到的完整算式與推導步驟",
-    "error_analysis": "詳細分析哪裡寫對、哪裡寫錯",
-    "score": "最終給分 (只需填寫數字)",
-    "feedback": "給學生的評語"
+    "error_analysis": "詳細分析哪裡寫對、哪裡寫錯（若全對則寫「邏輯與計算皆正確」）",
+    "score": "最終給分 (只需填寫純數字，例如 4)",
+    "feedback": "給這位學生的簡短評語與建議"
 }}"""
     
     # 呼叫 API
     response = client.chat.completions.create(
         model=model_name,
+        response_format={"type": "json_object"},  # ⭐【新增】強制 API 開啟嚴格 JSON 物件模式
         messages=[
             {"role": "system", "content": system_prompt},
             {
@@ -79,24 +86,23 @@ def grade_single_image(image_b64, model_name, rubric):
                 ]
             }
         ],
-        max_tokens=1500,
-        temperature=0.2
+        max_tokens=4000,  # ⭐【修正】將 Token 上限大幅調高至 4000，確保長公式不會被切斷
+        temperature=0.1
     )
     
     # 取得原始回傳文字
     raw_text = response.choices[0].message.content.strip()
     
-    # 嘗試清理字串
+    # 清理字串
     cleaned_text = raw_text.replace("```json", "").replace("```", "").strip()
     
-    # 加入防呆除錯機制：如果不是以 { 開頭，直接丟出原始文字
     if not cleaned_text.startswith("{"):
-        raise ValueError(f"第三方 API 沒有回傳 JSON 格式。原始回傳內容為：\n{raw_text}")
+        raise ValueError(f"第三方 API 未成功輸出 JSON 結構。原始內容：\n{raw_text}")
 
     try:
         return json.loads(cleaned_text)
     except json.JSONDecodeError:
-        raise ValueError(f"JSON 解析失敗。原始回傳內容為：\n{raw_text}")
+        raise ValueError(f"JSON 語法解析失敗。原始內容：\n{raw_text}")
 
 # ==========================================
 # 3. 網頁介面 (UI) 設計
@@ -110,21 +116,18 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("⚙️ 1. 批改設定")
     
-    # 模型選擇選單
     model_options = {
         "🧠 gemini-3-flash-preview": "gemini-3-flash-preview",
         "⚡ gemini-3-flash-preview": "gemini-3-flash-preview",
-        "🔮 備用高階模型 (gpt-4o)": "gpt-4o"
+        "🔮 gemini-3-flash-preview": "gemini-3-flash-preview"
     }
     selected_friendly_name = st.selectbox("選擇 AI 模型", options=list(model_options.keys()))
     actual_model_name = model_options[selected_friendly_name]
     
-    # 評分標準輸入區
     st.markdown("<br>", unsafe_allow_html=True)
     default_rubric = """1. 寫出正確公式：給 2 分\n2. 運算過程正確：給 2 分\n3. 最終答案正確：給 1 分\n(總分 5 分)"""
     rubric = st.text_area("設定評分標準 (Rubric)", value=default_rubric, height=150)
     
-    # 檔案上傳區 (支援 pdf)
     st.markdown("<br>", unsafe_allow_html=True)
     uploaded_file = st.file_uploader("上傳全班作業 (PDF) 或單張圖片 (JPG/PNG)", type=["pdf", "jpg", "png", "jpeg"])
 
@@ -135,7 +138,6 @@ with col2:
         file_extension = uploaded_file.name.split('.')[-1].lower()
         images_to_process = []
         
-        # 判斷是 PDF 還是單張圖片
         if file_extension == 'pdf':
             with st.spinner("📄 正在從 PDF 中擷取每一頁的考卷..."):
                 images_to_process = extract_images_from_pdf(uploaded_file.read())
@@ -146,27 +148,21 @@ with col2:
             
         st.markdown("---")
         
-        # 執行批改按鈕
         if st.button("🚀 開始批量智能批改", type="primary", use_container_width=True):
-            
-            # 建立進度條與狀態文字
             progress_bar = st.progress(0)
             status_text = st.empty()
             
             results_list = []
             total_pages = len(images_to_process)
             
-            # 開始迴圈批改每一頁
             for i, img in enumerate(images_to_process):
                 page_num = i + 1
                 status_text.text(f"🧠 正在批改第 {page_num} / {total_pages} 頁，請稍候...")
                 
                 try:
-                    # 編碼並呼叫 API
                     b64_img = encode_image(img)
                     result_json = grade_single_image(b64_img, actual_model_name, rubric)
                     
-                    # 儲存成功結果
                     results_list.append({
                         "page": page_num,
                         "image": img,
@@ -174,7 +170,6 @@ with col2:
                         "status": "success"
                     })
                 except Exception as e:
-                    # 處理單頁失敗的狀況 (不中斷整個流程，並記錄錯誤)
                     results_list.append({
                         "page": page_num,
                         "image": img,
@@ -182,25 +177,17 @@ with col2:
                         "status": "error"
                     })
                 
-                # 更新進度條
                 progress_bar.progress((i + 1) / total_pages)
             
-            # 完成提示
             status_text.success(f"🎉 批量批改完成！共處理 {total_pages} 份作業。")
             st.balloons()
             
-            # ==========================================
-            # 顯示批量結果 (使用 Expander 折疊排版)
-            # ==========================================
             st.subheader("📊 批改結果總覽")
-            
             for res in results_list:
-                # 如果只有一頁就預設展開，多頁就預設折疊
                 with st.expander(f"📄 第 {res['page']} 頁作業批改結果", expanded=(total_pages==1)):
                     subcol1, subcol2 = st.columns([1, 2])
                     
                     with subcol1:
-                        # 顯示縮圖
                         st.image(res['image'], use_container_width=True)
                         
                     with subcol2:
