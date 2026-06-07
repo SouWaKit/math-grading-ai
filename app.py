@@ -57,7 +57,6 @@ def draw_error_boxes(original_image, boxes):
     if isinstance(boxes, list):
         for box in boxes:
             try:
-                # 確保格式是 [x1, y1, x2, y2]
                 if isinstance(box, list) and len(box) == 4:
                     x1 = (box[0] / 100.0) * width
                     y1 = (box[1] / 100.0) * height
@@ -66,12 +65,11 @@ def draw_error_boxes(original_image, boxes):
                     # 畫一個邊框粗細為 4 的醒目紅色長方形
                     draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
             except Exception:
-                pass # 如果 AI 亂給座標導致錯誤，就略過不畫
+                pass 
     return annotated_image
 
 def robust_json_extract(text):
     """【終極暴力解析】用正則表達式硬挖出 JSON 區塊，並嘗試修復"""
-    # 嘗試找出第一個 { 到最後一個 } 之間的內容
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         json_str = match.group(0)
@@ -81,7 +79,6 @@ def robust_json_extract(text):
     try:
         return json.loads(json_str)
     except json.JSONDecodeError:
-        # 緊急修復：如果結尾斷掉，補齊
         if json_str.count('"') % 2 != 0:
             json_str += '"'
         json_str += '}'
@@ -140,7 +137,7 @@ def grade_single_image(image_b64, model_name, rubric):
 # 3. 網頁介面 (UI) 設計
 # ==========================================
 st.title("📝 高中數學作業自動批改系統 (Pro 視覺標註版)")
-st.markdown("啟用頂級模型，支援 **紅框糾錯** 與 **PDF 批量批改**。")
+st.markdown("啟用頂級模型，支援 **紅框糾錯**、**PDF 批量批改** 與 **匯入評分標準**。")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 1.5])
@@ -148,7 +145,7 @@ col1, col2 = st.columns([1, 1.5])
 with col1:
     st.subheader("⚙️ 1. 批改設定")
     
-    # 將 3.1 Pro Preview 設為預設首選
+    # 選擇模型
     model_options = {
         "👑 頂級邏輯預覽版 (gemini-3.1-pro-preview)": "gemini-3.1-pro-preview",
         "🚀 極速預覽版 (gemini-3-flash-preview)": "gemini-3-flash-preview",
@@ -158,11 +155,36 @@ with col1:
     actual_model_name = model_options[selected_friendly_name]
     
     st.markdown("<br>", unsafe_allow_html=True)
-    default_rubric = """1. 寫出正確公式：給 2 分\n2. 運算過程正確：給 2 分\n3. 最終答案正確：給 1 分\n(總分 5 分)"""
-    rubric = st.text_area("設定評分標準 (Rubric)", value=default_rubric, height=150)
     
+    # ==========================================
+    # 【新增】評分標準輸入方式切換
+    # ==========================================
+    st.markdown("**📋 評分標準設定**")
+    rubric_mode = st.radio("選擇輸入方式：", ["手動輸入", "上傳檔案 (.txt)"], horizontal=True, label_visibility="collapsed")
+    
+    default_rubric = "1. 寫出正確公式：給 2 分\n2. 運算過程正確：給 2 分\n3. 最終答案正確：給 1 分\n(總分 5 分)"
+    
+    if rubric_mode == "手動輸入":
+        rubric = st.text_area("自訂評分標準", value=default_rubric, height=150, label_visibility="collapsed")
+    else:
+        # 提供上傳文字檔的選項
+        rubric_file = st.file_uploader("上傳包含評分標準的純文字檔 (.txt, .md)", type=["txt", "md"])
+        if rubric_file is not None:
+            # 讀取並解碼文字檔
+            rubric = rubric_file.read().decode("utf-8")
+            st.success("✅ 成功載入評分標準檔案！")
+            with st.expander("🔍 預覽目前使用的評分標準"):
+                st.text(rubric)
+        else:
+            # 如果還沒上傳，先用預設值墊檔
+            rubric = default_rubric
+            st.info("👆 請上傳檔案。目前將暫時使用系統預設標準。")
+
     st.markdown("<br>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("上傳全班作業 (PDF) 或單張圖片 (JPG/PNG)", type=["pdf", "jpg", "png", "jpeg"])
+    
+    # 考卷上傳區
+    st.markdown("**📄 學生作業上傳**")
+    uploaded_file = st.file_uploader("上傳全班作業 (PDF) 或單張圖片 (JPG/PNG)", type=["pdf", "jpg", "png", "jpeg"], label_visibility="collapsed")
 
 with col2:
     st.subheader("👁️ 2. 作業處理與批改結果")
@@ -196,7 +218,6 @@ with col2:
                     b64_img = encode_image(img)
                     result_json = grade_single_image(b64_img, actual_model_name, rubric)
                     
-                    # 畫紅框
                     annotated_img = draw_error_boxes(img, result_json.get('error_boxes', []))
                     
                     results_list.append({
@@ -226,7 +247,17 @@ with col2:
                     
                     with subcol1:
                         if res['status'] == "success":
-                            st.image(res['annotated_image'], caption="AI 批改標註圖", use_container_width=True)
+                            data = res['data']
+                            boxes = data.get('error_boxes', [])
+                            
+                            if boxes and len(boxes) > 0 and isinstance(boxes[0], list):
+                                show_boxes = st.toggle("👁️ 顯示紅框標註", value=True, key=f"toggle_{res['page']}")
+                                if show_boxes:
+                                    st.image(res['annotated_image'], caption="AI 批改標註圖", use_container_width=True)
+                                else:
+                                    st.image(res['original_image'], caption="原始畫面", use_container_width=True)
+                            else:
+                                st.image(res['original_image'], caption="原始畫面 (無錯誤)", use_container_width=True)
                         else:
                             st.image(res['original_image'], use_container_width=True)
                         
@@ -238,7 +269,7 @@ with col2:
                             
                             boxes = data.get('error_boxes', [])
                             if boxes and len(boxes) > 0 and isinstance(boxes[0], list):
-                                st.error("🚨 AI 已在左圖用紅框標註疑似錯誤的區域。")
+                                st.error("🚨 AI 已抓出疑似計算錯誤的區域 (可使用左側開關查看)。")
                             else:
                                 st.success("✅ AI 未在圖片中標示出明顯的錯誤區塊。")
                                 
