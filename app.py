@@ -1,6 +1,8 @@
 import streamlit as st
-import google.generativeai as genai
+from openai import OpenAI
+import base64
 from PIL import Image
+import io
 import json
 
 # ==========================================
@@ -8,35 +10,40 @@ import json
 # ==========================================
 st.set_page_config(page_title="高中數學作業自動批改系統", layout="wide")
 
-
+# 讀取金鑰與第三方代理網址
+if "GEMINI_API_KEY" in st.secrets and "GEMINI_BASE_URL" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+    base_url = st.secrets["GEMINI_BASE_URL"]
+    
+    # 確保 base_url 結尾有 /v1 (多數第三方 API 的標準格式)
+    if not base_url.endswith("/v1") and not base_url.endswith("/v1/"):
+        base_url = base_url.rstrip("/") + "/v1"
+        
+    # 初始化客戶端 (這裡使用 openai 套件來精準連接第三方網站)
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url
+    )
+else:
+    st.error("⚠️ 請先在 Streamlit Secrets 中設定 GEMINI_API_KEY 與 GEMINI_BASE_URL")
+    st.stop()
 
 # ==========================================
-# 2. 動態抓取模型與友善命名
+# 2. 輔助函式：圖片轉 Base64
 # ==========================================
-@st.cache_data(ttl=3600)
-def get_friendly_models():
-    friendly_options = {}
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods and 'gemini' in m.name:
-                raw_name = m.name.replace("models/", "")
-                if "flash" in raw_name:
-                    friendly_name = f"⚡ 極速批改版 ({raw_name}) - 適合簡單題型"
-                elif "pro" in raw_name:
-                    friendly_name = f"🧠 深度邏輯版 ({raw_name}) - 適合複雜計算"
-                else:
-                    friendly_name = f"🔮 其他可用模型 ({raw_name})"
-                friendly_options[friendly_name] = raw_name
-    except Exception as e:
-        st.error(f"無法取得模型列表：{e}")
-    return friendly_options
-
-model_dict = get_friendly_models()
+def encode_image(uploaded_file):
+    image = Image.open(uploaded_file)
+    # 將圖片轉換為 RGB 模式並壓縮，避免超過 API 大小限制
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    buffered = io.BytesIO()
+    image.save(buffered, format="JPEG", quality=85)
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 # ==========================================
 # 3. 網頁介面 (UI) 設計
 # ==========================================
-st.title("📝 高中數學作業自動批改系統 (測試版)")
+st.title("📝 高中數學作業自動批改系統 (第三方穩健版)")
 st.markdown("---")
 
 col1, col2 = st.columns([1, 1.2])
@@ -44,16 +51,18 @@ col1, col2 = st.columns([1, 1.2])
 with col1:
     st.subheader("⚙️ 1. 批改設定")
     
-    # 模型選擇
-    if model_dict:
-        default_idx = next((i for i, name in enumerate(model_dict.keys()) if "深度邏輯版" in name), 0)
-        selected_friendly_name = st.selectbox(
-            "選擇 AI 模型", options=list(model_dict.keys()), index=default_idx
-        )
-        actual_model_name = model_dict[selected_friendly_name]
-        st.caption(f"目前實際調用模型：`{actual_model_name}`")
+    # 手動建立模型清單 (第三方網站通常支援這些標準命名)
+    model_options = {
+        "🧠 深度邏輯版 (gemini-1.5-pro) - 適合複雜計算": "gemini-1.5-pro",
+        "⚡ 極速批改版 (gemini-1.5-flash) - 適合簡單題型": "gemini-1.5-flash",
+        "🔮 測試用 (gpt-4o) - 若第三方有支援也可選": "gpt-4o"
+    }
     
-    # 評分標準
+    selected_friendly_name = st.selectbox("選擇 AI 模型", options=list(model_options.keys()))
+    actual_model_name = model_options[selected_friendly_name]
+    st.caption(f"目前實際調用模型：`{actual_model_name}`")
+    
+    # 評分標準設定區
     st.markdown("<br>", unsafe_allow_html=True)
     default_rubric = """1. 寫出正確公式：給 2 分
 2. 運算過程正確：給 2 分
@@ -61,7 +70,7 @@ with col1:
 (總分 5 分)"""
     rubric = st.text_area("設定評分標準 (Rubric)", value=default_rubric, height=150)
     
-    # 檔案上傳 (第一階段先測試 JPG/PNG 圖片)
+    # 圖片上傳區
     st.markdown("<br>", unsafe_allow_html=True)
     uploaded_file = st.file_uploader("上傳學生單張作業圖片 (JPG/PNG)", type=["jpg", "png", "jpeg"])
 
@@ -69,65 +78,71 @@ with col2:
     st.subheader("👁️ 2. 作業預覽與批改結果")
     
     if uploaded_file is not None:
-        # 讀取並顯示圖片
-        image = Image.open(uploaded_file)
-        st.image(image, caption="學生上傳的作業畫面", use_container_width=True)
-        
+        st.image(Image.open(uploaded_file), caption="學生上傳的作業畫面", use_container_width=True)
         st.markdown("---")
-        # 按下批改按鈕
+        
         if st.button("🚀 確認無誤，開始智能批改", type="primary", use_container_width=True):
-            with st.spinner("🧠 Gemini 正在仔細閱讀算式並評分中..."):
+            with st.spinner(f"🧠 {actual_model_name} 正在透過第三方 API 深度閱讀中..."):
                 try:
-                    # 初始化選擇的模型
-                    model = genai.GenerativeModel(actual_model_name)
+                    # 1. 將圖片轉為 Base64 字串
+                    base64_image = encode_image(uploaded_file)
                     
-                    # 提示詞工程 (Prompt)
-                    prompt = f"""
-                    你是一位嚴謹的高中數學老師。請根據下方的【評分標準】，批改圖片中的學生數學作業。
+                    # 2. 設計 Prompt 系統指令
+                    system_prompt = f"你是一位嚴謹的高中數學老師。請嚴格以 JSON 格式回傳，不要有任何多餘的文字或 markdown 標記 (不要有 ```json)。"
                     
-                    【評分標準】：
-                    {rubric}
+                    user_prompt = f"""請根據下方的【評分標準】，批改圖片中的學生數學作業。
+【評分標準】：
+{rubric}
+
+【回傳 JSON 格式要求】：
+{{
+    "recognized_steps": "你辨識到的完整算式與推導步驟",
+    "error_analysis": "詳細分析哪裡寫對、哪裡寫錯",
+    "score": "最終給分 (填寫數字)",
+    "feedback": "給學生的評語"
+}}
+"""
+                    # 3. 呼叫第三方 API
+                    response = client.chat.completions.create(
+                        model=actual_model_name,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": user_prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{base64_image}"
+                                        }
+                                    }
+                                ]
+                            }
+                        ],
+                        max_tokens=1500,
+                        temperature=0.2
+                    )
                     
-                    【作業要求】：
-                    1. 仔細辨識圖片中的手寫算式。
-                    2. 判斷學生的邏輯是否有錯、計算是否粗心。
-                    3. 請你嚴格以 JSON 格式回傳結果，不需要任何多餘的問候語，直接輸出 JSON 內容即可。
+                    # 4. 取得回傳文字並清理
+                    raw_text = response.choices[0].message.content.strip()
+                    raw_text = raw_text.replace("```json", "").replace("```", "").strip()
                     
-                    【回傳 JSON 格式】：
-                    {{
-                        "recognized_steps": "你辨識到的學生完整算式與推導步驟",
-                        "error_analysis": "詳細分析學生哪裡寫對、哪裡寫錯（若全對則寫「邏輯與計算皆正確」）",
-                        "score": "最終給分（只需填寫數字）",
-                        "feedback": "給這位學生的簡短評語與建議"
-                    }}
-                    """
-                    
-                    # 送出給 Gemini
-                    response = model.generate_content([prompt, image])
-                    raw_text = response.text.strip()
-                    
-                    # 確保乾淨的 JSON 格式 (安全替換法，避免語法錯誤)
-                    raw_text = raw_text.replace("```json", "")
-                    raw_text = raw_text.replace("```", "")
-                    raw_text = raw_text.strip()
-                    
-                    # 解析結果
+                    # 5. 解析 JSON 
                     result = json.loads(raw_text)
                     
-                    # 顯示批改成果
+                    # 6. 渲染結果
                     st.success("🎉 批改完成！")
                     st.metric(label="🌟 AI 建議分數", value=f"{result.get('score', '未知')} 分")
                     st.info(f"**💬 給學生的評語**：\n{result.get('feedback', '無')}")
                     
-                    with st.expander("🔍 查看 AI 詳細分析過程"):
+                    with st.expander("🔍 查看 AI 詳細分析過程", expanded=True):
                         st.write("**辨識到的算式：**")
                         st.code(result.get('recognized_steps', '無法辨識'))
                         st.write("**錯誤分析邏輯：**")
                         st.write(result.get('error_analysis', '無詳細分析'))
                         
-                except json.JSONDecodeError:
-                     st.error(f"💥 批改失敗。AI 未按標準 JSON 格式回傳。原始回傳內容：\n{raw_text}")
                 except Exception as e:
-                    st.error(f"💥 批改過程發生錯誤。錯誤訊息：{e}")
+                    st.error(f"💥 批改發生錯誤。請確認您的第三方網址與金鑰是否正確。錯誤細節：{e}")
     else:
-        st.info("👈 請先在左側設定評分標準，並上傳一張學生的作業圖片。")
+        st.info("👈 請先上傳圖片。")
